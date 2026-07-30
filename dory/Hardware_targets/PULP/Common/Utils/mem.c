@@ -44,10 +44,30 @@ static struct pi_device ram;
 static ram_conf_t ram_conf;
 
 
+/* Weak, empty by default. Every failure below reports itself with printf() and
+ * then calls pmsis_exit(), which on a target whose console is not a UART -- the
+ * Crazyflie AI-deck, where printf goes to pins nothing is listening to -- means
+ * the application simply stops mid-boot with no output at all. That is
+ * indistinguishable from a wedged chip, a bad flash and an empty readfs, and each
+ * of those has a completely different fix.
+ *
+ * An application that defines dory_mem_init_step() sees each step and its return
+ * code as it happens, over whatever transport it actually has. `err` is 0 on
+ * success, so a healthy boot emits one line per step and the last step reached
+ * localises a failure. The hook is called BEFORE pmsis_exit(), which is the only
+ * moment the information still exists. */
+__attribute__((weak)) void dory_mem_init_step(const char *step, int err) {
+  (void) step; (void) err;
+}
+
 void mem_init() {
+  int err;
+
   flash_conf_init(&flash_conf);
   pi_open_from_conf(&flash, &flash_conf);
-  if (pi_flash_open(&flash)) {
+  err = pi_flash_open(&flash);
+  dory_mem_init_step("flash_open", err);
+  if (err) {
     printf("ERROR: Cannot open flash! Exiting...\n");
     pmsis_exit(-1);
   }
@@ -56,14 +76,18 @@ void mem_init() {
   pi_readfs_conf_init(&fs_conf);
   fs_conf.fs.flash = &flash;
   pi_open_from_conf(&fs, &fs_conf);
-  if (pi_fs_mount(&fs)) {
+  err = pi_fs_mount(&fs);
+  dory_mem_init_step("fs_mount", err);
+  if (err) {
     printf("ERROR: Cannot mount filesystem! Exiting...\n");
     pmsis_exit(-2);
   }
 
   ram_conf_init(&ram_conf);
   pi_open_from_conf(&ram, &ram_conf);
-  if (pi_ram_open(&ram)) {
+  err = pi_ram_open(&ram);
+  dory_mem_init_step("ram_open", err);
+  if (err) {
     printf("ERROR: Cannot open ram! Exiting...\n");
     pmsis_exit(-3);
   }

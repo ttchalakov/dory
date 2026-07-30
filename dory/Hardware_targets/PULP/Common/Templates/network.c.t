@@ -258,8 +258,13 @@ void ${prefix}network_run_cluster(void *args) {
     if (layer_with_weights[i] == 1)
       L2_weights = dmalloc(weights_size[i], dir);
 
-    if (allocate_layer[i] == 1)
+    if (allocate_layer[i] == 1) {
       cl_ram_read(L2_weights, L3_weights_curr, weights_size[i]);
+      /* Weak, empty by default -- see dory_weights_staged() in net_utils.h. The
+       * bytes have just crossed the HyperBus, and a short read here is silent:
+       * the layer would compute on whatever else was in this L2 buffer. */
+      dory_weights_staged(i, Layers_name[i], (void *) L2_weights, weights_size[i]);
+    }
     % else:
     L2_weights = Weights_name[i];
 % endif
