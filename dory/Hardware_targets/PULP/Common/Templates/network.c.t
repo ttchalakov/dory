@@ -48,6 +48,7 @@ l3_supported = DORY_HW_graph[0].HW_description['memory']['levels'] > 2
 #define L3_INPUT_SIZE 1500000
 #define L3_OUTPUT_SIZE 1500000
 % endif
+static struct pi_device ${prefix}cluster_dev;
 static void *L3_weights = NULL;
 static void *L3_input = NULL;
 static void *L3_output = NULL;
@@ -92,6 +93,20 @@ void ${prefix}execute_layer_fork(void *args) {
   layer_args_t *layer_args = (layer_args_t *)args;
   if (pi_core_id() == 0) layer_args->L1_buffer = pmsis_l1_malloc(${l1_buffer});
 
+  /* A failed allocation used to fall straight through, and the layer then ran
+   * against address 0 -- producing plausible-looking garbage instead of an
+   * error. DORY sizes this buffer assuming it is the sole user of cluster L1, so
+   * any application that also puts something there can hit this. The GAP9
+   * template has always checked; this one did not. */
+  if (NULL == layer_args->L1_buffer) {
+    if (pi_core_id() == 0) dory_l1_alloc_failed++;
+#ifdef VERBOSE
+    printf("ERROR: Failed to allocate the L1 buffer (%d B) for layer %d.\n",
+           ${l1_buffer}, layer_args->layer_id);
+#endif
+    return;
+  }
+
   switch (layer_args->layer_id)
   {
 % for i in range(len(DORY_HW_graph)):
@@ -106,14 +121,24 @@ void ${prefix}execute_layer_fork(void *args) {
 
 struct ${prefix}network_run_token ${prefix}network_run_async(void *l2_buffer, size_t l2_buffer_size, void *l2_final_output, int exec, int initial_dir${", void *L2_input_h" if not l3_supported else ""})
 {
-  struct pi_device cluster_dev = {0};
+  /* The device is file-scope, not a local. pi_device holds a pointer to driver
+   * state that pi_cluster_open() registers, so opening a fresh stack struct each
+   * call and then closing a *copy* of it (network_run_wait takes the token by
+   * value) leaves the driver inconsistent: the first inference works and the
+   * second one kills the chip. Measured in examples/nn_lab -- stage 1 dies on
+   * run 1, stage 2 (which opens the cluster once itself) runs indefinitely. */
   struct pi_cluster_conf conf;
   struct pi_cluster_task cluster_task = {0};
   // First open the cluster
   pi_cluster_conf_init(&conf);
   conf.id=0;
 <%
-    n_args = 4 if l3_supported else 5
+    # 5 slots are written unconditionally (args[0..4]); the no-L3 path writes
+    # args[5] as well. This used to say 4/5, one short in both branches, so
+    # the last store ran off the end of a stack array that shares its frame
+    # with cluster_dev, conf and cluster_task -- a silent, layout-dependent
+    # corruption of the very structs the cluster is about to be driven with.
+    n_args = 5 if l3_supported else 6
 %>\
   unsigned int args[${n_args}];
   args[0] = (unsigned int) l2_buffer;
@@ -126,21 +151,25 @@ struct ${prefix}network_run_token ${prefix}network_run_async(void *l2_buffer, si
   % endif
   // open cluster...
   pi_cluster_task(&cluster_task, ${prefix}network_run_cluster, args);
-  pi_open_from_conf(&cluster_dev, &conf);
-  if (pi_cluster_open(&cluster_dev))
-    return;
+  pi_open_from_conf(&${prefix}cluster_dev, &conf);
+  /* A bare `return;` here was undefined behaviour: this function returns a
+   * struct. */
+  if (pi_cluster_open(&${prefix}cluster_dev))
+    return (struct ${prefix}network_run_token) { .cluster_dev = {0} };
   // Then offload an entry point, this will get executed on the cluster controller
   cluster_task.stack_size = ${master_stack};
   cluster_task.slave_stack_size = ${slave_stack};
-  pi_cluster_send_task_to_cl(&cluster_dev, &cluster_task);
+  pi_cluster_send_task_to_cl(&${prefix}cluster_dev, &cluster_task);
   return (struct ${prefix}network_run_token) {
-    .cluster_dev = cluster_dev
+    .cluster_dev = ${prefix}cluster_dev
   };
 }
 
 void ${prefix}network_run_wait(struct ${prefix}network_run_token token)
 {
-  pi_cluster_close(&token.cluster_dev);
+  /* Close the device that was opened, not the caller's copy of it. */
+  (void) token;
+  pi_cluster_close(&${prefix}cluster_dev);
   % if 'Perf_final' in verbose_level:
   print_perf("Final", ${prefix}cycle_network_execution, ${MACs});
   % endif
@@ -284,6 +313,8 @@ void ${prefix}network_run_cluster(void *args) {
     pi_perf_start();
 % endif
     ${prefix}execute_layer_fork((void *) &largs);
+
+    dory_layer_done(i, Layers_name[i], (void *) L2_output, activations_out_size[i]);
 % if 'Yes' in performance or 'Perf_final' in verbose_level:
     // performance measurements: end
     pi_perf_stop();

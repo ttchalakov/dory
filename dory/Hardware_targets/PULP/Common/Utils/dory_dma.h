@@ -49,4 +49,17 @@ void dory_dma_free(DMA_copy *copy);
 void dory_dma_barrier(DMA_copy *copy);
 
 int dory_dma_allocate();
+
+#ifdef DORY_DMA_PROBE
+/* Weak hook, called by dory_dma_barrier() once the wait has returned, with the
+ * MCHAN status word read at that instant. Bits 0..15 are the per-counter
+ * "transfer still pending" flags, so a non-zero low half here means the barrier
+ * let the core past while data was still moving -- something no amount of
+ * inspecting the generated code can tell you, and the difference between a
+ * tiling bug and a synchronization bug. Default is an empty function; an
+ * application overrides it to record what it sees. Deliberately takes only
+ * already-computed values so that overriding it costs a handful of cycles and
+ * does not perturb the very race it is measuring. */
+void dory_dma_probe(DMA_copy *copy, unsigned int mchan_status);
+#endif // DORY_DMA_PROBE
 #endif

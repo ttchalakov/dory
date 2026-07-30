@@ -21,8 +21,15 @@
 #define __${prefix.upper()}WEIGHTS_H__
 % if sdk == 'gap_sdk':
 #include "pulp.h"
-% endif
+% else:
+<%doc>
+  hal/pulp.h drags in archi/pulp.h, which needs PULP_CHIP_STR defined by the
+  PULP-OS build system. It used to be included unconditionally here, which made
+  the 2-level target's weights header uncompilable under the GAP SDK -- the
+  sibling input_h_template.h has always guarded this correctly.
+</%doc>
 #include <hal/pulp.h>
+% endif
 
 % for i in range(len(weights_vectors)):
 % if weights_dimensions[i] > 0:

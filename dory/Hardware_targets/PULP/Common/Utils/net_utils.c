@@ -21,3 +21,9 @@ void checksum(const char *name, const uint8_t *d, size_t size, uint32_t sum_true
     printf("Failed: true [%u] vs. calculated [%u]\n", sum_true, sum);
 }
 
+volatile unsigned int dory_l1_alloc_failed = 0;
+
+__attribute__((weak)) void dory_layer_done(int layer_id, const char *name,
+                                           void *l2_output, size_t size) {
+  (void) layer_id; (void) name; (void) l2_output; (void) size;
+}

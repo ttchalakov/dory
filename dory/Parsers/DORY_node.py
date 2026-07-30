@@ -149,6 +149,40 @@ class DORY_node:
                 self.number_of_input_constants += 1
 
 
+    def fc_weights_layout(self, weights_value):
+        '''
+        Layout of a FullyConnected node's weight tensor: "CinCout" ([in][out]) or
+        "CoutCin" ([out][in]). The PULP backend transposes the tensor iff this
+        says "CinCout", so getting it wrong silently corrupts the layer.
+
+        ONNX states the layout outright, so read it instead of guessing:
+          Gemm    Y = A' B' + C, and B is [K,N] when transB=0, [N,K] when transB=1
+          MatMul  Y = A B,       and B is always [K,N]
+
+        This replaces a shape heuristic (weights.shape[0] == input_channels) that
+        cannot distinguish the two whenever the layer is square -- it labelled
+        every square transB=1 Gemm "CinCout", so the backend transposed a tensor
+        that was already correct. Non-square layers are unaffected: there the
+        heuristic and the attribute always agree.
+        '''
+        if self.op_type == "MatMul":
+            return "CinCout"
+        if self.op_type == "Gemm":
+            # absent transB means 0, per the ONNX spec
+            return "CoutCin" if getattr(self, "transB", 0) else "CinCout"
+
+        # Not an op whose layout is defined by the standard (a fused or renamed
+        # node). Fall back to the old heuristic, but refuse to guess when it is
+        # provably ambiguous rather than emitting a silently transposed blob.
+        shape = np.asarray(weights_value).shape
+        if len(shape) >= 2 and shape[0] == shape[1]:
+            sys.exit(
+                "DORY FRONTEND error. Cannot determine the weight layout of "
+                "square FullyConnected node '{}' (op_type '{}', weights {}): it "
+                "has no transB attribute and its shape is ambiguous.".format(
+                    self.name, self.op_type, shape))
+        return "CinCout" if shape[0] == self.input_channels else "CoutCin"
+
     def add_special_attributes(self, node_iterating):
         '''
         adding not expected and custom attributes (e.g., min and max in clip)
