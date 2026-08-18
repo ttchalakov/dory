@@ -23,6 +23,7 @@ l3_supported = DORY_HW_graph[0].HW_description['memory']['levels'] > 2
 #define DEFINE_CONSTANTS
 %if not l3_supported:
 #include "${prefix}weights.h"
+#include "cf_dory_profile.h"
 %endif
 #include "net_utils.h"
 #include "pmsis.h"
@@ -172,6 +173,24 @@ void ${prefix}network_run_wait(struct ${prefix}network_run_token token)
   pi_cluster_close(&${prefix}cluster_dev);
   % if 'Perf_final' in verbose_level:
   print_perf("Final", ${prefix}cycle_network_execution, ${MACs});
+  % endif
+  % if 'Yes' in performance or 'Perf_final' in verbose_level:
+  /* cf: compute-vs-orchestration split. Guarded on the same condition as
+   * cycle_network_execution's declaration above -- that variable does not exist
+   * otherwise, so this cannot be hoisted out of the guard however convenient
+   * that would be. cf_dory_prof_report is itself a no-op macro unless the app
+   * is compiled with CF_DORY_PROFILE=1, so a network generated with
+   * performance='Yes' and built without the define pays nothing.
+   *
+   * Enabling it needs BOTH: generate with performance='Yes' (or Perf_final),
+   * and compile with CF_DORY_PROFILE=1. Note that performance='Yes' also emits
+   * a per-layer print_perf, and 'Perf_final' emits the final one; the harness
+   * timing parser in examples/kernel_lab/host/dory_network_bench.py has been
+   * seen to mis-read those, reporting 59.5 us for a network that takes 14420.5.
+   * Check any run made with these flags against a run made without them before
+   * trusting its timings -- the profiler explains a measurement, it must not
+   * replace it. */
+  cf_dory_prof_report(${prefix}cycle_network_execution);
   % endif
 }
 
