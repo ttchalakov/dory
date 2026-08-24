@@ -52,6 +52,39 @@
 #define MCHAN_MAX_TRANSFER_SIZE (32764)
 #endif
 
+/* Instrumentation hooks. Both are weak and both compile out unless
+ * DORY_DMA_PROBE is defined: they sit in the innermost loop of every tiled layer
+ * and reading the MCHAN status is a peripheral access.
+ *
+ *   dory_dma_probe_issue()  immediately before a transfer is pushed
+ *   dory_dma_probe()        from dory_dma_barrier(), once the wait has returned
+ *
+ * The completion hook alone yields a timestamp with no duration behind it, so
+ * MCHAN arbitration and L2 port contention cannot be told apart -- both present
+ * as "the barrier took a while". Pairing the two gives per-transfer duration and
+ * therefore effective bandwidth, and the status word read at issue says whether
+ * the queue was already occupied. Below the MCHAN peak with an empty queue is
+ * port contention; at the peak with a non-empty queue is arbitration.
+ *
+ * Both take only already-computed values, so an override costs a handful of
+ * cycles and does not perturb the race being measured. An override may store
+ * what it sees; it must not print. */
+#ifdef DORY_DMA_PROBE
+__attribute__((weak)) void dory_dma_probe(DMA_copy *copy, unsigned int mchan_status) {
+  (void) copy;
+  (void) mchan_status;
+}
+__attribute__((weak)) void dory_dma_probe_issue(DMA_copy *copy, unsigned int mchan_status) {
+  (void) copy;
+  (void) mchan_status;
+}
+#define DORY_DMA_PROBE_CALL(copy) dory_dma_probe((copy), MCHAN_READ_STATUS())
+#define DORY_DMA_PROBE_ISSUE_CALL(copy) dory_dma_probe_issue((copy), MCHAN_READ_STATUS())
+#else
+#define DORY_DMA_PROBE_CALL(copy) ((void) 0)
+#define DORY_DMA_PROBE_ISSUE_CALL(copy) ((void) 0)
+#endif
+
 static void dory_dma_push_lines(int dir, unsigned char *loc, unsigned char *ext,
                                 unsigned int size_1d, unsigned int n_lines,
                                 unsigned int stride);
@@ -78,6 +111,7 @@ void dory_dma_memcpy_hwc_to_chw(DMA_copy *copy){
   const int size_2d = copy->number_of_1d_copies * copy->number_of_2d_copies;
 
   for (int i=start_pixel; i<stop_pixel; i++) {
+    DORY_DMA_PROBE_ISSUE_CALL(copy);
     // one byte at a time, so size_2d "lines" of 1 byte. Chunked because one
     // command cannot express more than MCHAN_MAX_TRANSFER_SIZE bytes.
     dory_dma_push_lines(copy->dir, (unsigned char *) loc, (unsigned char *) ext,
@@ -95,6 +129,7 @@ void dory_dma_memcpy_hwc_to_chw(DMA_copy *copy){
 
 void dory_dma_memcpy_1d_async(DMA_copy *copy) {
   if (pi_core_id() == 0) {
+    DORY_DMA_PROBE_ISSUE_CALL(copy);
     // Split anything past the command's length field into several commands. They
     // all land on the same counter -- an allocated counter stays active until
     // another is allocated -- so the existing barrier still waits for all of
@@ -165,6 +200,7 @@ static void dory_dma_push_lines(int dir, unsigned char *loc, unsigned char *ext,
 
 void dory_dma_memcpy_2d_async(DMA_copy *copy) {
   if (pi_core_id() == 0) {
+    DORY_DMA_PROBE_ISSUE_CALL(copy);
     const int size_2d = copy->number_of_1d_copies * copy->length_1d_copy * copy->number_of_2d_copies;
     const int stride = (copy->number_of_2d_copies == 1) ? copy->stride_1d : copy->stride_2d;
     const int size_1d = (copy->number_of_2d_copies == 1) ? copy->length_1d_copy : copy->length_1d_copy * copy->number_of_1d_copies;
@@ -195,6 +231,7 @@ void dory_dma_memcpy_3d_async(DMA_copy *copy) {
   void *loc = copy->loc + copy->length_1d_copy*copy->number_of_1d_copies*start_pixel;
   const int size_2d = copy->number_of_1d_copies * copy->length_1d_copy;
   for (int i = start_pixel; i < stop_pixel; i++) {
+    DORY_DMA_PROBE_ISSUE_CALL(copy);
     // Chunked for the same reason as the 1D/2D paths: one command cannot express
     // more than MCHAN_MAX_TRANSFER_SIZE bytes, and exceeding it truncates
     // silently rather than failing.
@@ -229,18 +266,6 @@ void dory_dma_memcpy_async(DMA_copy *copy) {
 void dory_dma_free(DMA_copy *copy) {
   mchan_transfer_free(copy->tid);
 }
-
-#ifdef DORY_DMA_PROBE
-__attribute__((weak)) void dory_dma_probe(DMA_copy *copy, unsigned int mchan_status) {
-  (void) copy;
-  (void) mchan_status;
-}
-#define DORY_DMA_PROBE_CALL(copy) dory_dma_probe((copy), MCHAN_READ_STATUS())
-#else
-// Compiled out unless asked for: this sits in the innermost loop of every tiled
-// layer, and reading the MCHAN status is a peripheral access.
-#define DORY_DMA_PROBE_CALL(copy) ((void) 0)
-#endif
 
 void dory_dma_barrier(DMA_copy *copy) {
 #ifdef SINGLE_CORE_DMA

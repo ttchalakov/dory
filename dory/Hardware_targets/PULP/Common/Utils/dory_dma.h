@@ -61,5 +61,22 @@ int dory_dma_allocate();
  * already-computed values so that overriding it costs a handful of cycles and
  * does not perturb the very race it is measuring. */
 void dory_dma_probe(DMA_copy *copy, unsigned int mchan_status);
+
+/* Issue-side counterpart, called immediately before each transfer is pushed,
+ * from whichever core does the pushing. Its reason to exist is that the
+ * completion hook above records *when* a transfer finished and never how long it
+ * took, which leaves the two candidate causes of a slow barrier -- MCHAN
+ * arbitration and L2 port contention -- indistinguishable. Subtracting this
+ * stamp from the completion stamp gives a duration, and with copy's dimensions a
+ * bandwidth; the status word here says whether the queue was already occupied
+ * when this transfer was pushed, which is what separates the two.
+ *
+ * Note the pairing is not always one to one. The 1D and 2D paths push once per
+ * call from core 0. The 3D and HWC paths push once per 2D slice, from every core
+ * unless SINGLE_CORE_DMA, and under ALWAYS_BLOCK_DMA_TRANSFERS they call
+ * dory_dma_barrier() inside that same loop -- so an override must treat a burst
+ * of issues followed by one completion as normal and report the depth rather
+ * than assume it is one. */
+void dory_dma_probe_issue(DMA_copy *copy, unsigned int mchan_status);
 #endif // DORY_DMA_PROBE
 #endif
